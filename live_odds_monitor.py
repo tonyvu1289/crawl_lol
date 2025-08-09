@@ -173,13 +173,25 @@ class LoLOddsMonitor:
                 for sport in sports:
                     leagues = sport.get("LG", [])
                     for league in leagues:
+                        # Extract league name from league context
+                        league_name = (
+                            league.get("BaseLGName") or
+                            league.get("LGName") or
+                            league.get("LName") or
+                            league.get("Name") or ""
+                        )
                         parent_matches = league.get("ParentMatch", [])
                         for parent_match in parent_matches:
                             # Only include matches that are actually live
-                            # Check for HasLive and LiveCnt > 0 (has live games)
+                            # Check for HasLive and LiveCnt > 0 (has live
+                            # games)
                             if (parent_match.get("HasLive") and
                                     parent_match.get("LiveCnt", 0) > 0):
-                                live_matches.append(parent_match)
+                                # Attach league name so downstream consumers
+                                # have access
+                                pm = parent_match.copy()
+                                pm['league_name'] = league_name
+                                live_matches.append(pm)
                 
                 logger.info(f"Found {len(live_matches)} live matches")
                 return live_matches
@@ -270,6 +282,8 @@ class LoLOddsMonitor:
                 if parent_match:
                     game_info["team1"] = parent_match.get("PHTName", "Team A")
                     game_info["team2"] = parent_match.get("PATName", "Team B")
+                    # Attach league name so we can display it too
+                    game_info["league"] = parent_match.get("league_name", "")
                 else:
                     game_info["team1"] = match.get("TName1", "Team A")
                     game_info["team2"] = match.get("TName2", "Team B")
@@ -333,9 +347,11 @@ class LoLOddsMonitor:
             team1 = game.get("team1", "Team 1")
             team2 = game.get("team2", "Team 2")
             status = game.get("status", "Unknown")
+            league = game.get("league", "Unknown League")
             
             output.append(f"\nGame {game_num}: {team1} vs {team2}")
             output.append(f"Status: {status}")
+            output.append(f"League: {league}")
             
             if game.get("odds"):
                 output.append("Odds:")
@@ -412,10 +428,8 @@ class LoLOddsMonitor:
                     
                     # Store odds data if we have any
                     if game_odds:
-                        # Add league name to match for storage
-                        match_with_league = match.copy()
-                        match_with_league['league_name'] = self._get_league_name(match)
-                        self.store_odds_data(game_odds, match_with_league)
+                        # Pass along the match which already contains league_name
+                        self.store_odds_data(game_odds, match)
                 
                 # Display current odds if we have any
                 if all_game_odds:
@@ -434,7 +448,8 @@ class LoLOddsMonitor:
                             team2 = match.get("PATName", "Team 2")
                             score1 = match.get("PHTScore", 0)
                             score2 = match.get("PATScore", 0)
-                            print(f"  {team1} vs {team2} ({score1}-{score2})")
+                            league = match.get('league_name', 'Unknown League')
+                            print(f"  {team1} vs {team2} ({score1}-{score2}) | League: {league}")
                     else:
                         print("Waiting for tracked matches to resume or end...")
                     print("-" * 60)
@@ -494,9 +509,11 @@ class LoLOddsMonitor:
             team2 = match.get("PATName", "Team 2")
             score1 = match.get("PHTScore", 0)
             score2 = match.get("PATScore", 0)
+            league = match.get('league_name', 'Unknown League')
             
             print(f"Match ID: {match_id}")
             print(f"Match: {team1} vs {team2}")
+            print(f"League: {league}")
             print(f"Score: {score1} - {score2}")
             
             # Show live games within this match
@@ -626,10 +643,14 @@ class LoLOddsMonitor:
     
     def _get_league_name(self, match):
         """Extract league name from match data structure"""
-        # This would need to be extracted from the parent API response
-        # For now, return a placeholder - in full implementation,
-        # this would be passed from the league context
-        return "Unknown League"
+        # Prefer value attached during get_live_matches; fall back to common keys
+        return (
+            match.get('league_name') or
+            match.get('BaseLGName') or
+            match.get('LGName') or
+            match.get('LName') or
+            "Unknown League"
+        )
     
     def finalize_storage(self):
         """Finalize storage and save any pending data"""
@@ -653,8 +674,8 @@ def main():
     parser.add_argument(
         "--interval",
         type=int,
-        default=30,
-        help="Update interval in seconds (default: 30)"
+        default=3,
+        help="Update interval in seconds (default: 3)"
     )
     parser.add_argument(
         "--max-iterations",
@@ -674,7 +695,7 @@ def main():
     parser.add_argument(
         "--storage",
         choices=["json", "csv", "sqlite"],
-        default="json",
+        default="sqlite",
         help="Data storage format (default: json)"
     )
     parser.add_argument(
